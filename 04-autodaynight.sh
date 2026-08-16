@@ -92,6 +92,31 @@ systemctl enable --now geoclue.service >/dev/null 2>&1 || true
 
 echo "[4/6] 安装 ipinfo → /etc/geolocation 更新器（联网/定时触发）"
 cat > /usr/local/bin/update-geolocation.sh <<'UEOF'
+direct_curl() {
+    env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+        curl --noproxy '*' --max-time 10 -fsS "$@"
+}
+loc=""
+for url in https://ipinfo.io/json https://ipwho.is/; do
+    json=$(direct_curl "$url") || continue
+    if command -v jq >/dev/null 2>&1; then
+        loc=$(printf '%s' "$json" | jq -r '.loc // empty')
+        [ -n "$loc" ] || loc=$(printf '%s' "$json" | jq -r '[.latitude,.longitude] | map(tostring) | join(",") // empty')
+    else
+        loc=$(printf '%s' "$json" | sed -nE 's/.*"loc"[[:space:]]*:[[:space:]]*"([0-9.-]+,[0-9.-]+)".*//p')
+    fi
+    [ -n "$loc" ] && break
+done
+[ -n "${loc:-}" ] || exit 1
+lat=${loc%,*}; lon=${loc#*,}
+case "$lat" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
+case "$lon" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
+printf '%.4f\n%.4f\n0\n200\n' "$lat" "$lon" > /tmp/geolocation.new
+if ! cmp -s /tmp/geolocation.new /etc/geolocation 2>/dev/null; then
+    cp /tmp/geolocation.new /etc/geolocation
+    echo "[$(date '+%F %T')] geolocation 更新为: $lat, $lon"
+fi
+UEOF'
 #!/bin/bash
 # 用 ipinfo 查询经纬度写入 /etc/geolocation（geoclue 静态源实时读取）。
 # --noproxy：代理会返回代理所在地，导致坐标错误。
