@@ -55,6 +55,11 @@
 
 ## 使用
 
+> 说明：`update-system-timezone.sh`（IP→时区）与 `update-geolocation.sh`（IP→坐标）
+> 已内嵌在 `01-autotimezone.sh` 与 `04-autodaynight.sh` 中，由主脚本自动安装到
+> `/usr/local/bin`，仓库不再单独提供。
+
+
 ```bash
 sudo bash 01-autotimezone.sh   # 自动时区
 sudo bash 02-f4-led-sync.sh    # F4 LED
