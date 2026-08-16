@@ -3,13 +3,11 @@
 # 04-autodaynight.sh — 启用 KDE 自动黑白（Day-Night Cycle 自动定位）
 # ThinkPad X13 Gen 4 · Arch Linux · KDE Plasma 6
 #
-# 本机无 GPS/蜂窝，且 WiFi 众包库(BeaconDB)与 geoclue 自带 IP 库(DB-IP)
-# 在本地均不可靠（曾把位置判成广州）。因此采用已验证的准确方案：
+# 无 GPS/蜂窝时，WiFi 众包库与 geoclue 自带 IP 库可能不准；本方案用 ipinfo
+# （按出口 IP，实测较准）查坐标 → 写 /etc/geolocation → geoclue 静态源实时读取
+# → KDE knighttimed 计算日出日落。
 #
-#   ipinfo(按出口 IP 定位，本地实测准确) → 写 /etc/geolocation
-#   → geoclue 静态源(static-source) 实时读取 → KDE knighttimed 计算日出日落
-#
-# 触发：NetworkManager 联网时 + systemd 定时器每 30 分钟兜底，自动跟随位置。
+# 代理处理：HTTP/SOCKS 代理由 direct_curl 绕过；TUN/VPN 出口（无法绕过）则跳过更新。
 #
 # 用法：sudo bash 04-autodaynight.sh
 # 依赖：geoclue、curl、networkmanager、systemd、qt6-positioning(已装)
@@ -92,49 +90,27 @@ systemctl enable --now geoclue.service >/dev/null 2>&1 || true
 
 echo "[4/6] 安装 ipinfo → /etc/geolocation 更新器（联网/定时触发）"
 cat > /usr/local/bin/update-geolocation.sh <<'UEOF'
+#!/bin/bash
+# 用 ipinfo 查询经纬度写入 /etc/geolocation（geoclue 静态源实时读取）。
+# 代理处理：HTTP/SOCKS 代理由 direct_curl 绕过；TUN/VPN 出口跳过更新避免污染。
+# 分流放行：touch /etc/thinkpad-fixes.allow-proxy-location
+set -u
+
 direct_curl() {
     env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
         curl --noproxy '*' --max-time 10 -fsS "$@"
 }
 
-# 网络层隧道检测：若公网出口走 TUN/TAP/WireGuard，出口 IP 已被代理改写，
-# --noproxy 无法绕过，跳过自动更新避免污染。HTTP/SOCKS 代理无隧道，direct_curl 已绕过。
-# 若确需在代理运行时更新，可创建 /etc/thinkpad-fixes.allow-proxy-location 放行。
+# 网络层隧道检测：公网出口走 TUN/TAP/WireGuard 时出口 IP 已被改写，无法绕过
 if [ ! -f /etc/thinkpad-fixes.allow-proxy-location ] \
    && ip route get 8.8.8.8 2>/dev/null | grep -qE "dev (tun|tap|wg)[0-9]"; then
     echo "[$(date '+%F %T')] 检测到 TUN/VPN 出口，跳过 IP 定位更新（放行：touch /etc/thinkpad-fixes.allow-proxy-location）" >&2
     exit 0
 fi
+
 loc=""
 for url in https://ipinfo.io/json https://ipwho.is/; do
     json=$(direct_curl "$url") || continue
-    if command -v jq >/dev/null 2>&1; then
-        loc=$(printf '%s' "$json" | jq -r '.loc // empty')
-        [ -n "$loc" ] || loc=$(printf '%s' "$json" | jq -r '[.latitude,.longitude] | map(tostring) | join(",") // empty')
-    else
-        loc=$(printf '%s' "$json" | sed -nE 's/.*"loc"[[:space:]]*:[[:space:]]*"([0-9.-]+,[0-9.-]+)".*//p')
-    fi
-    [ -n "$loc" ] && break
-done
-[ -n "${loc:-}" ] || exit 1
-lat=${loc%,*}; lon=${loc#*,}
-case "$lat" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
-case "$lon" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
-tmp=$(mktemp /tmp/geolocation.XXXXXX 2>/dev/null) || tmp=/tmp/geolocation.$$
-trap 'rm -f "$tmp"' EXIT
-printf '%.4f\n%.4f\n0\n200\n' "$lat" "$lon" > "$tmp"
-if ! cmp -s "$tmp" /etc/geolocation 2>/dev/null; then
-    cp "$tmp" /etc/geolocation
-    echo "[$(date '+%F %T')] geolocation 更新为: $lat, $lon"
-fi
-UEOF'
-#!/bin/bash
-# 用 ipinfo 查询经纬度写入 /etc/geolocation（geoclue 静态源实时读取）。
-# --noproxy：代理会返回代理所在地，导致坐标错误。
-set -u
-loc=""
-for url in https://ipinfo.io/json https://ipwho.is/; do
-    json=$(curl --noproxy '*' -fsS --max-time 10 "$url" 2>/dev/null) || continue
     if command -v jq >/dev/null 2>&1; then
         loc=$(printf '%s' "$json" | jq -r '.loc // empty')
         [ -n "$loc" ] || loc=$(printf '%s' "$json" | jq -r '[.latitude,.longitude] | map(tostring) | join(",") // empty')
@@ -147,9 +123,11 @@ done
 lat=${loc%,*}; lon=${loc#*,}
 case "$lat" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
 case "$lon" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
-printf '%.4f\n%.4f\n0\n200\n' "$lat" "$lon" > /tmp/geolocation.new
-if ! cmp -s /tmp/geolocation.new /etc/geolocation 2>/dev/null; then
-    cp /tmp/geolocation.new /etc/geolocation
+tmp=$(mktemp /tmp/geolocation.XXXXXX 2>/dev/null) || tmp=/tmp/geolocation.$$
+trap 'rm -f "$tmp"' EXIT
+printf '%.4f\n%.4f\n0\n200\n' "$lat" "$lon" > "$tmp"
+if ! cmp -s "$tmp" /etc/geolocation 2>/dev/null; then
+    cp "$tmp" /etc/geolocation
     echo "[$(date '+%F %T')] geolocation 更新为: $lat, $lon"
 fi
 UEOF
