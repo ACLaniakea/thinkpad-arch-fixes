@@ -32,8 +32,10 @@ done
 lat=${loc%,*}; lon=${loc#*,}
 case "$lat" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
 case "$lon" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
-printf '%.4f\n%.4f\n0\n200\n' "$lat" "$lon" > /tmp/geolocation.new
-if ! cmp -s /tmp/geolocation.new /etc/geolocation 2>/dev/null; then
-    cp /tmp/geolocation.new /etc/geolocation
+tmp=$(mktemp /tmp/geolocation.XXXXXX 2>/dev/null) || tmp=/tmp/geolocation.$$
+trap 'rm -f "$tmp"' EXIT
+printf '%.4f\n%.4f\n0\n200\n' "$lat" "$lon" > "$tmp"
+if ! cmp -s "$tmp" /etc/geolocation 2>/dev/null; then
+    cp "$tmp" /etc/geolocation
     echo "[$(date '+%F %T')] geolocation 更新为: $lat, $lon"
 fi
