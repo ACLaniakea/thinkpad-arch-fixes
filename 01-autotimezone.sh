@@ -53,6 +53,15 @@ direct_curl() {
         curl --noproxy '*' --max-time 10 -fsS "$@"
 }
 
+# 检测本机代理/VPN 进程：TUN/全局代理会把出口 IP 带偏，默认跳过自动更新避免污染。
+# 若已在代理规则中放行 ipinfo.io / ipwho.is / geoip.kde.org 走直连（分流模式），
+# 可创建 /etc/thinkpad-fixes.allow-proxy-location 允许代理运行时继续更新。
+if [ ! -f /etc/thinkpad-fixes.allow-proxy-location ] \
+   && pgrep -f "clash|mihomo|sing-box|v2ray|xray|trojan|hysteria|shadowsocks|ss-local|openvpn|wireguard" >/dev/null 2>&1; then
+    echo "[$(date '+%F %T')] 检测到代理/VPN 进程，跳过 IP 定位更新（如需放行：touch /etc/thinkpad-fixes.allow-proxy-location）" >&2
+    exit 0
+fi
+
 zone=""
 for url in https://ipinfo.io/json https://ipwho.is/; do
     json=$(direct_curl "$url") || continue
