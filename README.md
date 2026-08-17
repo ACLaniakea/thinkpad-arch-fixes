@@ -9,6 +9,8 @@
 | `02-f4-led-sync.sh` | F4 麦克风静音指示灯跟随软件静音状态 |
 | `03-tlp-hibernate.sh` | TLP 省电策略 + 合盖挂起后自动休眠 |
 | `04-autodaynight.sh` | KDE 自动黑白（Day-Night 定位）：ipinfo → geoclue 静态源 → 日落切换 |
+| `05-fix-kioworker-calligra.sh` | 修复 kioworker 崩溃：禁用 Calligra 缩略图插件（可选彻底卸载） |
+| `06-fix-captive-portal.sh` | 强制门户登录页修复：连通性检查 + open-captive-portal 助手 |
 
 ## 前提与依赖
 
@@ -54,6 +56,9 @@
 - 注意：切换地区时关代理或让 `ipinfo.io`/`ipwho.is` 走直连。
 
 ## 使用
+
+> 05/06 为故障修复脚本：05 处理 Dolphin 缩略图 worker（kioworker）崩溃；06 处理强制门户网络登录页打不开/被重定向到连通性测试页的问题。
+
 
 ```bash
 sudo bash 01-autotimezone.sh   # 自动时区
