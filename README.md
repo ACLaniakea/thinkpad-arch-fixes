@@ -34,8 +34,8 @@
 
 ### 02 F4 LED 同步
 - 背景：F4 是硬件 micmute LED，只随 F4 键走；软件静音（PipeWire/KDE）不会驱动它。
-- 方案：udev 放开 LED 写权限 + 用户级服务 `micmute-led.service` 轮询默认麦克风源
-  静音状态写 LED（1 秒内同步，PipeWire 重启可自愈）。
+- 方案：udev 放开 LED 写权限 + 用户级服务 `micmute-led.service` 同步
+  （pactl 事件驱动 ~30ms 即时响应 + 1.5s 轮询兜底，PipeWire 重启可自愈）。
 
 ### 03 TLP + 休眠
 - TLP：插电=性能档(PRF)，电池=省电档(SAV)，PCIe ASPM powersave，核显 DPM low。

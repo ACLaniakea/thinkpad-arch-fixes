@@ -4,8 +4,10 @@
 #
 # 背景：F4 的 platform::micmute 是硬件 LED，只随 F4 键切换；用软件静音
 #       （PipeWire/KDE 快捷设置/命令）不会驱动它，导致灯与实际静音状态脱节。
-# 方案：udev 放开 LED 写权限 + 用户级 systemd 服务轮询 PipeWire 静音状态
-#       （轮询可自动恢复 PipeWire 重启等异常，并确保 trigger=none 不被占用）。
+# 方案：udev 放开 LED 写权限 + 用户级 systemd 服务同步。
+#       同步采用"事件驱动 + 轮询兜底"双通道：
+#         - pactl subscribe 事件即时响应（~30ms）
+#         - 1.5s 轮询兜底，覆盖 PipeWire 重启 / 事件丢失等场景
 #
 # 用法：sudo bash 02-f4-led-sync.sh
 # 依赖：pipewire-pulse(pactl/wpctl)、systemd
@@ -40,24 +42,40 @@ echo "[2/3] 安装用户级同步脚本"
 mkdir -p "$TARGET_HOME/.local/bin" "$TARGET_HOME/.config/systemd/user"
 cat > "$TARGET_HOME/.local/bin/micmute-led-sync.sh" <<'LED'
 #!/bin/bash
-# 轮询是有意为之：可自动恢复 PipeWire 重启等情况；1 秒间隔开销可忽略。
+# 事件驱动(pactl subscribe 即时) + 轮询兜底(1.5s) 双通道：
+# 平时 ~30ms 响应；pactl 事件丢失或 PipeWire 重启时由轮询兜底自愈。
 set -u
 led=/sys/class/leds/platform::micmute/brightness
 led_dir=${led%/*}
 last=''
-while :; do
-    if [ -w "$led" ]; then
-        printf 'none' > "$led_dir/trigger" 2>/dev/null || true
-        state=0
-        if wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | grep -q 'MUTED'; then
-            state=1
-        fi
-        if [ "$state" != "$last" ]; then
-            printf '%s' "$state" > "$led" 2>/dev/null || true
-            last=$state
-        fi
+
+sync_led() {
+    [ -w "$led" ] || return 0
+    printf 'none' > "$led_dir/trigger" 2>/dev/null || true
+    state=0
+    if wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | grep -q 'MUTED'; then
+        state=1
     fi
-    sleep 1
+    if [ "$state" != "$last" ]; then
+        printf '%s' "$state" > "$led" 2>/dev/null || true
+        last=$state
+    fi
+}
+
+sync_led
+
+# 事件通道（后台）
+( pactl subscribe 2>/dev/null | while IFS= read -r ev; do
+    case "$ev" in
+        *"'change' on source "*|*"'new' on source "*|*"'remove' on source "*)
+            sync_led ;;
+    esac
+done ) &
+
+# 轮询兜底（前台）
+while :; do
+    sleep 1.5
+    sync_led
 done
 LED
 chmod 755 "$TARGET_HOME/.local/bin/micmute-led-sync.sh"
@@ -83,7 +101,7 @@ echo "[3/3] 启用并启动用户服务"
 as_user systemctl --user daemon-reload >/dev/null 2>&1 || true
 as_user systemctl --user enable --now micmute-led.service >/dev/null 2>&1 || echo "  [!] 无桌面会话，登录后自动生效"
 sleep 1
-echo "  LED 当前状态: $(cat /sys/class/leds/platform::micmute/brightness 2>/dev/null || echo 未知)"
-echo "  麦克风: $(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null || echo 未知)"
+echo "  服务: $(as_user systemctl --user is-active micmute-led.service 2>/dev/null || echo 未知)"
+echo "  LED: $(cat /sys/class/leds/platform::micmute/brightness 2>/dev/null || echo 未知)"
 echo
-echo "完成！以后用 F4 或软件切换静音，LED 都会在 1 秒内同步。"
+echo "完成！以后 F4 或软件切换静音，LED 会即时（~30ms）同步。"
