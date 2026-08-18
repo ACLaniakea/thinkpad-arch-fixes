@@ -7,11 +7,11 @@
 |---|---|
 | `01-autotimezone.sh` | 自动时区：KDE geotimezoned + ipinfo 兜底 + NTP |
 | `02-f4-led-sync.sh` | F4 麦克风静音指示灯跟随软件静音状态 |
-| `03-tlp-hibernate.sh` | TLP + shutdown 休眠 + GRUB 中文 + 睡眠前后暂停播放器 |
+| `03-tlp-hibernate.sh` | TLP + platform 休眠 + GRUB 中文 + 睡眠前安全暂停播放器 |
 | `04-autodaynight.sh` | KDE 自动黑白（Day-Night 定位）：ipinfo → geoclue 静态源 → 日落切换 |
 | `05-fix-kioworker-calligra.sh` | 修复 kioworker 崩溃：禁用 Calligra 缩略图插件（可选彻底卸载） |
 | `06-fix-captive-portal.sh` | 强制门户登录页修复：连通性检查 + open-captive-portal 助手 |
-| `07-fix-hibernate-root.sh` | 禁用 S4 虚假唤醒源，修正会话冻结并暂停播放器 |
+| `07-fix-hibernate-root.sh` | 禁用 S4 虚假唤醒源，修正会话冻结并安全暂停播放器 |
 
 ## 前提与依赖
 
@@ -41,9 +41,10 @@
 ### 03 TLP + 休眠
 - TLP：插电=性能档(PRF)，电池=省电档(SAV)，PCIe ASPM powersave，核显 DPM low。
 - 休眠：自动探测 swap UUID → `resume=` 内核参数 → 以中文环境重新生成 GRUB；
-  使用更稳定的 `HibernateMode=shutdown`，合盖挂起 1 小时后自动休眠。
+  使用 `HibernateMode=platform`，合盖挂起 1 小时后自动休眠。
 - 修复：纯 AMD 机器覆盖 NVIDIA 包的 no-freeze 设置；每次睡眠前重新
-  关闭已知 S4 唤醒源，并在睡眠前和恢复后暂停所有 MPRIS 播放器。
+  关闭已知 S4 唤醒源；睡眠前只暂停状态为 Playing 的 MPRIS 播放器，恢复后不发
+  媒体命令，并关闭 WirePlumber 的输出移除自动 Pause，避免 YesPlayMusic 二次切回播放。
 - 注意：跑完后**必须重启一次**，然后测试 `sudo systemctl hibernate`；
   改延迟见 `/etc/systemd/sleep.conf.d/10-thinkpad-hibernate.conf` 的
   `HibernateDelaySec`（秒）。

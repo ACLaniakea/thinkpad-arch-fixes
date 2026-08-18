@@ -6,7 +6,8 @@
 #   - AMD-only 机器覆盖 NVIDIA 包带来的 no-freeze 设置；
 #   - 开机先设置一次唤醒源；
 #   - 通过 systemd-sleep hook 在每次睡眠前再次设置，避免驱动重新打开 NHI1 等源。
-#   - 改用 shutdown 休眠模式，并在睡眠前/恢复后暂停 MPRIS 播放器。
+#   - 使用 platform 休眠模式，仅暂停正在播放的 MPRIS 播放器，恢复后不发媒体命令。
+#   - 关闭 WirePlumber 的输出移除自动 Pause，避免 YesPlayMusic 被二次切回播放。
 #
 # 用法：sudo bash 07-fix-hibernate-root.sh
 # =============================================================================
@@ -20,7 +21,7 @@ done
 
 WAKEUP_SCRIPT=/usr/local/sbin/thinkpad-disable-wakeup.sh
 SLEEP_HOOK=/usr/lib/systemd/system-sleep/00-thinkpad-wakeup
-MEDIA_SCRIPT=/usr/local/sbin/thinkpad-pause-media.sh
+MEDIA_SCRIPT=/usr/local/sbin/thinkpad-pause-playing-media.sh
 
 echo "[1/4] 安装唤醒源处理脚本和每次睡眠前 hook"
 cat > "$WAKEUP_SCRIPT" <<'EOF'
@@ -51,8 +52,8 @@ chmod 0755 "$SLEEP_HOOK"
 
 cat > "$MEDIA_SCRIPT" <<'EOF'
 #!/bin/bash
+# YesPlayMusic 0.4.10 implements Pause as a toggle, so only call it while Playing.
 set -u
-[ "${1:-}" = post ] && sleep 2
 for bus in /run/user/[0-9]*/bus; do
     [ -S "$bus" ] || continue
     uid=${bus#/run/user/}
@@ -60,9 +61,18 @@ for bus in /run/user/[0-9]*/bus; do
     [ "$uid" -ge 1000 ] 2>/dev/null || continue
     user=$(getent passwd "$uid" | cut -d: -f1)
     [ -n "$user" ] || continue
+    runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+        wpctl settings linking.pause-playback false >/dev/null 2>&1 || true
     while read -r player _; do
         case "$player" in
             org.mpris.MediaPlayer2.*)
+                status=$(runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+                    busctl --user get-property "$player" /org/mpris/MediaPlayer2 \
+                    org.mpris.MediaPlayer2.Player PlaybackStatus 2>/dev/null) || continue
+                case "$status" in
+                    *'"Playing"'*) ;;
+                    *) continue ;;
+                esac
                 runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
                     busctl --user call "$player" /org/mpris/MediaPlayer2 \
                     org.mpris.MediaPlayer2.Player Pause >/dev/null 2>&1 && \
@@ -76,11 +86,18 @@ exit 0
 EOF
 chmod 0755 "$MEDIA_SCRIPT"
 
+install -d -m 0755 /etc/wireplumber/wireplumber.conf.d
+cat > /etc/wireplumber/wireplumber.conf.d/51-thinkpad-disable-mpris-pause.conf <<'EOF'
+wireplumber.settings = {
+  linking.pause-playback = false
+}
+EOF
+
 install -d -m 0755 /etc/systemd/sleep.conf.d
 cat > /etc/systemd/sleep.conf.d/10-thinkpad-hibernate.conf <<'EOF'
 [Sleep]
 HibernateDelaySec=3600
-HibernateMode=shutdown
+HibernateMode=platform
 EOF
 
 echo "[2/4] 安装开机初始化服务"
@@ -102,17 +119,18 @@ EOF
 systemctl disable --now thinkpad-disable-wakeup.service >/dev/null 2>&1 || true
 systemctl daemon-reload
 systemctl enable --now thinkpad-disable-wakeup.service >/dev/null
+systemctl disable thinkpad-stop-media.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/thinkpad-stop-media.service \
+    /usr/local/sbin/thinkpad-stop-media.sh \
+    /usr/local/sbin/thinkpad-pause-media.sh
 cat > /etc/systemd/system/thinkpad-pause-media.service <<'EOF'
 [Unit]
-Description=Pause media players around system sleep
+Description=Pause playing media once before system sleep
 Before=sleep.target
-PartOf=sleep.target
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/thinkpad-pause-media.sh pre
-ExecStop=/usr/local/sbin/thinkpad-pause-media.sh post
+ExecStart=/usr/local/sbin/thinkpad-pause-playing-media.sh
 
 [Install]
 WantedBy=sleep.target
