@@ -8,6 +8,7 @@
 #   3. 合盖先挂起，HibernateDelaySec=3600 后再进入休眠。
 #   4. AMD-only 机器覆盖 NVIDIA 包带来的 no-freeze 设置，保证挂起转休眠可靠。
 #   5. 每次进入睡眠前重新关闭已知的 S4 虚假唤醒源，避免驱动在开机后重新打开。
+#   6. 睡眠前和恢复后暂停 MPRIS 播放器，避免锁屏/蓝牙误触发播放。
 #
 # 用法：sudo bash 03-tlp-hibernate.sh
 # =============================================================================
@@ -23,6 +24,8 @@ need lsblk
 need lspci
 need sed
 need awk
+need busctl
+need runuser
 
 echo "[1/5] 配置并启用 TLP"
 TLP_CONF=/etc/tlp.conf
@@ -92,7 +95,8 @@ if [ -f /etc/default/grub ]; then
         mkinitcpio -P >/dev/null
         echo "  initramfs 已重建"
     fi
-    grub-mkconfig -o /boot/grub/grub.cfg >/dev/null
+    LANG=zh_CN.UTF-8 LANGUAGE=zh_CN:zh LC_ALL=zh_CN.UTF-8 \
+        grub-mkconfig -o /boot/grub/grub.cfg >/dev/null
     echo "  GRUB 已重新生成"
 else
     die "未检测到 GRUB；请手动把 resume=UUID=$SWAP_UUID 写入 systemd-boot entry 的 options。"
@@ -103,6 +107,7 @@ install -d -m 0755 /etc/systemd/sleep.conf.d /etc/systemd/logind.conf.d
 cat > /etc/systemd/sleep.conf.d/10-thinkpad-hibernate.conf <<'EOF'
 [Sleep]
 HibernateDelaySec=3600
+HibernateMode=shutdown
 EOF
 cat > /etc/systemd/logind.conf.d/60-thinkpad-hibernate.conf <<'EOF'
 [Login]
@@ -112,9 +117,10 @@ EOF
 # 清理旧脚本直接写入主配置的同名行，避免重复配置。
 sed -i '/^HandleLidSwitch=suspend-then-hibernate$/d; /^HandleLidSwitchExternalPower=suspend-then-hibernate$/d' /etc/systemd/logind.conf 2>/dev/null || true
 
-echo "[4/5] 安装每次睡眠前的 S4 唤醒源修复"
+echo "[4/5] 安装 S4 唤醒源与媒体播放保护"
 WAKEUP_SCRIPT=/usr/local/sbin/thinkpad-disable-wakeup.sh
 SLEEP_HOOK=/usr/lib/systemd/system-sleep/00-thinkpad-wakeup
+MEDIA_SCRIPT=/usr/local/sbin/thinkpad-pause-media.sh
 cat > "$WAKEUP_SCRIPT" <<'EOF'
 #!/bin/bash
 # Disable spurious PCI wakeup sources before every suspend/hibernate.
@@ -142,6 +148,55 @@ exec /usr/local/sbin/thinkpad-disable-wakeup.sh
 EOF
 chmod 0755 "$SLEEP_HOOK"
 
+cat > "$MEDIA_SCRIPT" <<'EOF'
+#!/bin/bash
+# Pause every MPRIS player before sleep and shortly after resume.
+set -u
+[ "${1:-}" = post ] && sleep 2
+
+for bus in /run/user/[0-9]*/bus; do
+    [ -S "$bus" ] || continue
+    uid=${bus#/run/user/}
+    uid=${uid%/bus}
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    user=$(getent passwd "$uid" | cut -d: -f1)
+    [ -n "$user" ] || continue
+
+    while read -r player _; do
+        case "$player" in
+            org.mpris.MediaPlayer2.*)
+                if runuser -u "$user" -- env \
+                    DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+                    busctl --user call "$player" /org/mpris/MediaPlayer2 \
+                    org.mpris.MediaPlayer2.Player Pause >/dev/null 2>&1; then
+                    echo "media paused: $player ($user)"
+                fi
+                ;;
+        esac
+    done < <(runuser -u "$user" -- env \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+        busctl --user --no-pager --no-legend list 2>/dev/null)
+done
+exit 0
+EOF
+chmod 0755 "$MEDIA_SCRIPT"
+
+cat > /etc/systemd/system/thinkpad-pause-media.service <<'EOF'
+[Unit]
+Description=Pause media players around system sleep
+Before=sleep.target
+PartOf=sleep.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/thinkpad-pause-media.sh pre
+ExecStop=/usr/local/sbin/thinkpad-pause-media.sh post
+
+[Install]
+WantedBy=sleep.target
+EOF
+
 # 保留开机时的初始设置，但不再依赖它：驱动可能在开机后重新打开 wakeup，
 # 所以真正关键的是上面的 system-sleep hook。
 cat > /etc/systemd/system/thinkpad-disable-wakeup.service <<'EOF'
@@ -162,6 +217,7 @@ EOF
 systemctl disable --now thinkpad-disable-wakeup.service >/dev/null 2>&1 || true
 systemctl daemon-reload
 systemctl enable --now thinkpad-disable-wakeup.service >/dev/null
+systemctl enable thinkpad-pause-media.service >/dev/null
 "$WAKEUP_SCRIPT"
 
 echo "[5/5] 修正用户会话冻结策略并重新加载配置"

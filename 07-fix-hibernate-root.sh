@@ -6,6 +6,7 @@
 #   - AMD-only 机器覆盖 NVIDIA 包带来的 no-freeze 设置；
 #   - 开机先设置一次唤醒源；
 #   - 通过 systemd-sleep hook 在每次睡眠前再次设置，避免驱动重新打开 NHI1 等源。
+#   - 改用 shutdown 休眠模式，并在睡眠前/恢复后暂停 MPRIS 播放器。
 #
 # 用法：sudo bash 07-fix-hibernate-root.sh
 # =============================================================================
@@ -13,12 +14,13 @@ set -Eeuo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 sudo bash $0" >&2; exit 1; }
 
-for cmd in systemctl lspci awk install; do
+for cmd in systemctl lspci awk install busctl runuser; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "[错误] 缺少命令：$cmd" >&2; exit 1; }
 done
 
 WAKEUP_SCRIPT=/usr/local/sbin/thinkpad-disable-wakeup.sh
 SLEEP_HOOK=/usr/lib/systemd/system-sleep/00-thinkpad-wakeup
+MEDIA_SCRIPT=/usr/local/sbin/thinkpad-pause-media.sh
 
 echo "[1/4] 安装唤醒源处理脚本和每次睡眠前 hook"
 cat > "$WAKEUP_SCRIPT" <<'EOF'
@@ -47,6 +49,40 @@ exec /usr/local/sbin/thinkpad-disable-wakeup.sh
 EOF
 chmod 0755 "$SLEEP_HOOK"
 
+cat > "$MEDIA_SCRIPT" <<'EOF'
+#!/bin/bash
+set -u
+[ "${1:-}" = post ] && sleep 2
+for bus in /run/user/[0-9]*/bus; do
+    [ -S "$bus" ] || continue
+    uid=${bus#/run/user/}
+    uid=${uid%/bus}
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    user=$(getent passwd "$uid" | cut -d: -f1)
+    [ -n "$user" ] || continue
+    while read -r player _; do
+        case "$player" in
+            org.mpris.MediaPlayer2.*)
+                runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+                    busctl --user call "$player" /org/mpris/MediaPlayer2 \
+                    org.mpris.MediaPlayer2.Player Pause >/dev/null 2>&1 && \
+                    echo "media paused: $player ($user)"
+                ;;
+        esac
+    done < <(runuser -u "$user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+        busctl --user --no-pager --no-legend list 2>/dev/null)
+done
+exit 0
+EOF
+chmod 0755 "$MEDIA_SCRIPT"
+
+install -d -m 0755 /etc/systemd/sleep.conf.d
+cat > /etc/systemd/sleep.conf.d/10-thinkpad-hibernate.conf <<'EOF'
+[Sleep]
+HibernateDelaySec=3600
+HibernateMode=shutdown
+EOF
+
 echo "[2/4] 安装开机初始化服务"
 cat > /etc/systemd/system/thinkpad-disable-wakeup.service <<'EOF'
 [Unit]
@@ -66,6 +102,23 @@ EOF
 systemctl disable --now thinkpad-disable-wakeup.service >/dev/null 2>&1 || true
 systemctl daemon-reload
 systemctl enable --now thinkpad-disable-wakeup.service >/dev/null
+cat > /etc/systemd/system/thinkpad-pause-media.service <<'EOF'
+[Unit]
+Description=Pause media players around system sleep
+Before=sleep.target
+PartOf=sleep.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/thinkpad-pause-media.sh pre
+ExecStop=/usr/local/sbin/thinkpad-pause-media.sh post
+
+[Install]
+WantedBy=sleep.target
+EOF
+systemctl daemon-reload
+systemctl enable thinkpad-pause-media.service >/dev/null
 "$WAKEUP_SCRIPT"
 
 echo "[3/4] 修正冻结用户会话策略"
