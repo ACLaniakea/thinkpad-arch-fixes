@@ -45,7 +45,12 @@ CUR=$(as_user kreadconfig6 --file kdeglobals --group PreviewSettings --key Plugi
 if [ -n "$CUR" ] && ! printf '%s' "$CUR" | tr ',' '\n' | grep -qx 'calligrathumbnail'; then
     echo "  已处于禁用状态，跳过"
 else
-    LIST=$(ls "$DIR" | sed -n 's/\.so$//p' | grep -v '^calligrathumbnail$' | paste -sd, -)
+    if [ -n "$CUR" ]; then
+        # 保留用户现有的插件选择，只移除 calligrathumbnail。
+        LIST=$(printf '%s' "$CUR" | awk -F, '{ for (i = 1; i <= NF; i++) if ($i != "" && $i != "calligrathumbnail") { if (n++) printf ","; printf "%s", $i } }')
+    else
+        LIST=$(find "$DIR" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sed 's/\.so$//' | awk '$0 != "calligrathumbnail" { if (n++) printf ","; printf "%s", $0 }')
+    fi
     as_user kwriteconfig6 --file kdeglobals --group PreviewSettings --key Plugins "$LIST"
     echo "  已写入插件列表：$(printf '%s' "$LIST" | tr ',' '\n' | wc -l) 个（不含 calligrathumbnail）"
 fi

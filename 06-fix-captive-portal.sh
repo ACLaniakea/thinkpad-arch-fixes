@@ -17,6 +17,9 @@
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 sudo bash $0" >&2; exit 1; }
+for cmd in nmcli ip xdg-open; do
+    command -v "$cmd" >/dev/null 2>&1 || { echo "[错误] 缺少命令：$cmd" >&2; exit 1; }
+done
 TARGET_USER=${SUDO_USER:-}
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
     TARGET_USER=$(getent passwd 1000 | cut -d: -f1)
@@ -45,8 +48,9 @@ else
 uri=http://ping.archlinux.org/nm-check.txt
 EOF
     echo "  已写入默认 URI: http://ping.archlinux.org/nm-check.txt"
-    nmcli general reload >/dev/null 2>&1 || true
 fi
+nmcli general reload >/dev/null 2>&1 || \
+    echo "  [!] NetworkManager 配置尚未立即 reload，重启 NetworkManager 后生效。" >&2
 
 echo "[2/3] 安装 open-captive-portal 助手"
 cat > /usr/local/bin/open-captive-portal <<'HELPER'

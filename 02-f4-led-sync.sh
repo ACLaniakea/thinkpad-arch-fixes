@@ -15,6 +15,13 @@
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 sudo bash $0" >&2; exit 1; }
+for cmd in udevadm runuser; do
+    command -v "$cmd" >/dev/null 2>&1 || { echo "[错误] 缺少命令：$cmd" >&2; exit 1; }
+done
+command -v wpctl >/dev/null 2>&1 || command -v pactl >/dev/null 2>&1 || {
+    echo "[错误] 缺少 wpctl 或 pactl" >&2
+    exit 1
+}
 TARGET_USER=${SUDO_USER:-}
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
     TARGET_USER=$(getent passwd 1000 | cut -d: -f1)
@@ -53,8 +60,12 @@ sync_led() {
     [ -w "$led" ] || return 0
     printf 'none' > "$led_dir/trigger" 2>/dev/null || true
     state=0
-    if wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | grep -q 'MUTED'; then
-        state=1
+    if command -v wpctl >/dev/null 2>&1; then
+        volume=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null) || return 0
+        printf '%s' "$volume" | grep -q 'MUTED' && state=1
+    else
+        mute=$(pactl get-source-mute @DEFAULT_SOURCE@ 2>/dev/null) || return 0
+        printf '%s' "$mute" | grep -qi 'yes' && state=1
     fi
     if [ "$state" != "$last" ]; then
         printf '%s' "$state" > "$led" 2>/dev/null || true
