@@ -4,8 +4,7 @@
 #
 # 内容：
 #   1. TLP 策略：插电=性能档(PRF)，电池=省电档(SAV)，PCIe ASPM powersave，核显 DPM low
-#   2. 休眠恢复：自动探测 swap 分区 UUID 写入 resume= 内核参数；
-#      加 amdgpu.runpm=0 缓解 RDNA3 休眠挂起(GPU复位失败)，重新生成 GRUB
+#   2. 休眠恢复：自动探测 swap 分区 UUID 写入 resume= 内核参数，重新生成 GRUB
 #   3. 合盖=挂起、1 小时后自动休眠（suspend-then-hibernate，HibernateDelaySec=3600）
 #   4. 修复：覆盖 nvidia-utils 的 no-freeze-session 设置（纯 AMD 机器不需要，
 #      不冻结会话会导致休眠镜像写入卡死/无法恢复）
@@ -57,14 +56,6 @@ if grep -q "resume=UUID=$SWAP_UUID" /etc/default/grub; then
 else
     sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 resume=UUID=$SWAP_UUID\"/" /etc/default/grub
     echo "  已写入 resume=UUID=$SWAP_UUID"
-fi
-# amdgpu(RDNA3) 休眠时偶发 GPU job 超时 + MODE2 复位失败导致挂起/睡死
-# runpm=0 是常用缓解参数（关闭 GPU 运行时电源管理，避免挂起阶段超时）
-if grep -q 'amdgpu.runpm=0' /etc/default/grub; then
-    echo "  amdgpu.runpm=0 已存在，跳过"
-else
-    sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 amdgpu.runpm=0"/' /etc/default/grub
-    echo "  已写入 amdgpu.runpm=0"
 fi
 grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1
 echo "  GRUB 已重新生成"
