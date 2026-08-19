@@ -15,6 +15,9 @@
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 sudo bash $0" >&2; exit 1; }
+for cmd in curl ip timedatectl; do
+    command -v "$cmd" >/dev/null 2>&1 || { echo "[错误] 缺少命令：$cmd" >&2; exit 1; }
+done
 TARGET_USER=${SUDO_USER:-}
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
     TARGET_USER=$(getent passwd 1000 | cut -d: -f1)
@@ -82,7 +85,10 @@ case "$zone" in */*) ;; *) exit 0 ;; esac
 [ "$zone" = "Asia/Urumqi" ] && zone="Asia/Shanghai"
 [ -f "/usr/share/zoneinfo/$zone" ] || exit 0
 current=$(timedatectl show --property=Timezone --value 2>/dev/null || true)
-[ "$current" = "$zone" ] || timedatectl set-timezone "$zone" >/dev/null 2>&1 || true
+if [ "$current" != "$zone" ]; then
+    timedatectl set-timezone "$zone" >/dev/null 2>&1 || \
+        echo "[$(date '+%F %T')] 设置时区失败：$zone" >&2
+fi
 TZ
 chmod 755 /usr/local/bin/update-system-timezone.sh
 
@@ -96,6 +102,8 @@ chmod 755 /etc/NetworkManager/dispatcher.d/60-update-system-timezone
 cat > /etc/systemd/system/update-system-timezone.service <<'UNIT'
 [Unit]
 Description=Refresh system timezone from current network location
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
@@ -114,7 +122,7 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now update-system-timezone.timer >/dev/null 2>&1 || true
+systemctl enable --now update-system-timezone.timer >/dev/null
 
 echo "[3/4] 启用 NTP（systemd-timesyncd 优先，停掉冲突的 ntpd）"
 if systemctl cat systemd-timesyncd.service >/dev/null 2>&1; then

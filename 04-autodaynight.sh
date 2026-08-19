@@ -15,6 +15,9 @@
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 sudo bash $0" >&2; exit 1; }
+for cmd in curl ip mktemp; do
+    command -v "$cmd" >/dev/null 2>&1 || { echo "[错误] 缺少命令：$cmd" >&2; exit 1; }
+done
 
 echo "[1/6] 安装 geoclue"
 pacman -Q geoclue >/dev/null 2>&1 || pacman -S --needed --noconfirm geoclue
@@ -123,11 +126,13 @@ done
 lat=${loc%,*}; lon=${loc#*,}
 case "$lat" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
 case "$lon" in -[0-9]*|[0-9]*) ;; *) exit 1 ;; esac
-tmp=$(mktemp /tmp/geolocation.XXXXXX 2>/dev/null) || tmp=/tmp/geolocation.$$
+tmp=$(mktemp /tmp/geolocation.XXXXXX)
 trap 'rm -f "$tmp"' EXIT
 printf '%.4f\n%.4f\n0\n200\n' "$lat" "$lon" > "$tmp"
 if ! cmp -s "$tmp" /etc/geolocation 2>/dev/null; then
-    cp "$tmp" /etc/geolocation
+    chmod 0644 "$tmp"
+    chown root:root "$tmp"
+    mv -f "$tmp" /etc/geolocation
     echo "[$(date '+%F %T')] geolocation 更新为: $lat, $lon"
 fi
 UEOF
@@ -143,6 +148,8 @@ chmod 755 /etc/NetworkManager/dispatcher.d/50-update-geolocation
 cat > /etc/systemd/system/update-geolocation.service <<'SUNIT'
 [Unit]
 Description=Refresh geoclue static location from IP geolocation
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
@@ -161,7 +168,7 @@ Persistent=true
 WantedBy=timers.target
 TUNIT
 systemctl daemon-reload
-systemctl enable --now update-geolocation.timer >/dev/null 2>&1 || true
+systemctl enable --now update-geolocation.timer >/dev/null
 /usr/local/bin/update-geolocation.sh || true
 
 echo "[5/6] 重启 geoclue 并验证"
