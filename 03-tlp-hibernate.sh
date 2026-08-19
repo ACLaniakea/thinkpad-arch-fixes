@@ -5,7 +5,7 @@
 # 目标：
 #   1. 插电使用 PRF，电池使用 SAV；只在电池侧启用更激进的 ASPM/GPU DPM。
 #   2. 为实际使用的 swap 分区配置 resume=，并重建 initramfs/GRUB。
-#   3. 合盖先挂起，HibernateDelaySec=3600 后再进入休眠。
+#   3. 只启用休眠能力；休眠模式、延迟与合盖动作交给 KDE PowerDevil。
 #   4. AMD-only 机器覆盖 NVIDIA 包带来的 no-freeze 设置，保证挂起转休眠可靠。
 #   5. 每次进入睡眠前重新关闭已知的 S4 虚假唤醒源，避免驱动在开机后重新打开。
 #   6. 仅在睡眠前暂停正在播放的 MPRIS 播放器；恢复/开机时绝不发媒体命令。
@@ -103,19 +103,15 @@ else
     die "未检测到 GRUB；请手动把 resume=UUID=$SWAP_UUID 写入 systemd-boot entry 的 options。"
 fi
 
-echo "[3/5] 配置合盖挂起→1 小时后休眠"
+echo "[3/5] 启用休眠能力（策略交给 KDE）"
 install -d -m 0755 /etc/systemd/sleep.conf.d /etc/systemd/logind.conf.d
 cat > /etc/systemd/sleep.conf.d/10-thinkpad-hibernate.conf <<'EOF'
 [Sleep]
-HibernateDelaySec=3600
-HibernateMode=platform
+AllowHibernation=yes
+AllowSuspendThenHibernate=yes
 EOF
-cat > /etc/systemd/logind.conf.d/60-thinkpad-hibernate.conf <<'EOF'
-[Login]
-HandleLidSwitch=suspend-then-hibernate
-HandleLidSwitchExternalPower=suspend-then-hibernate
-EOF
-# 清理旧脚本直接写入主配置的同名行，避免重复配置。
+# 清理旧版本写入的休眠策略，避免覆盖 KDE PowerDevil。
+rm -f /etc/systemd/logind.conf.d/60-thinkpad-hibernate.conf
 sed -i '/^HandleLidSwitch=suspend-then-hibernate$/d; /^HandleLidSwitchExternalPower=suspend-then-hibernate$/d' /etc/systemd/logind.conf 2>/dev/null || true
 
 echo "[4/5] 安装 S4 唤醒源与媒体暂停保护"
@@ -271,9 +267,8 @@ echo
 echo "===== 当前配置 ====="
 grep -E 'GRUB_CMDLINE_LINUX_DEFAULT' /etc/default/grub
 cat /etc/systemd/sleep.conf.d/10-thinkpad-hibernate.conf
-cat /etc/systemd/logind.conf.d/60-thinkpad-hibernate.conf
 echo "唤醒源："
 grep -E 'GPP6|GP11|GP12|XHC1|NHI1|LID|SLPB' /proc/acpi/wakeup 2>/dev/null || true
 echo
-echo "完成。已安装每次睡眠前的唤醒源 hook；请先拔掉/卸载 USB 外置盘，再手动测试："
+echo "完成。休眠触发、延迟和合盖动作请在 KDE 电源管理中设置；手动测试："
 echo "  sudo systemctl hibernate"

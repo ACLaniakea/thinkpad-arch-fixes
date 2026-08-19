@@ -6,7 +6,8 @@
 #   - AMD-only 机器覆盖 NVIDIA 包带来的 no-freeze 设置；
 #   - 开机先设置一次唤醒源；
 #   - 通过 systemd-sleep hook 在每次睡眠前再次设置，避免驱动重新打开 NHI1 等源。
-#   - 使用 platform 休眠模式，仅暂停正在播放的 MPRIS 播放器，恢复后不发媒体命令。
+#   - 只启用休眠能力，不设置休眠模式、延迟或合盖动作；这些策略交给 KDE。
+#   - 仅暂停正在播放的 MPRIS 播放器，恢复后不发媒体命令。
 #   - 关闭 WirePlumber 的输出移除自动 Pause，避免 YesPlayMusic 被二次切回播放。
 #
 # 用法：sudo bash 07-fix-hibernate-root.sh
@@ -15,7 +16,7 @@ set -Eeuo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 sudo bash $0" >&2; exit 1; }
 
-for cmd in systemctl lspci awk install busctl runuser; do
+for cmd in systemctl lspci awk install busctl runuser sed; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "[错误] 缺少命令：$cmd" >&2; exit 1; }
 done
 
@@ -96,9 +97,12 @@ EOF
 install -d -m 0755 /etc/systemd/sleep.conf.d
 cat > /etc/systemd/sleep.conf.d/10-thinkpad-hibernate.conf <<'EOF'
 [Sleep]
-HibernateDelaySec=3600
-HibernateMode=platform
+AllowHibernation=yes
+AllowSuspendThenHibernate=yes
 EOF
+install -d -m 0755 /etc/systemd/logind.conf.d
+rm -f /etc/systemd/logind.conf.d/60-thinkpad-hibernate.conf
+sed -i '/^HandleLidSwitch=suspend-then-hibernate$/d; /^HandleLidSwitchExternalPower=suspend-then-hibernate$/d' /etc/systemd/logind.conf 2>/dev/null || true
 
 echo "[2/4] 安装开机初始化服务"
 cat > /etc/systemd/system/thinkpad-disable-wakeup.service <<'EOF'
@@ -169,4 +173,4 @@ ls -l "$SLEEP_HOOK"
 echo "--- /proc/acpi/wakeup ---"
 grep -E 'GPP6|GP11|GP12|XHC1|NHI1|LID|SLPB' /proc/acpi/wakeup 2>/dev/null || true
 echo
-echo "完成。请拔掉/卸载 USB 外置盘后测试：sudo systemctl hibernate"
+echo "完成。休眠触发、延迟和合盖动作请在 KDE 电源管理中设置。"
